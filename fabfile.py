@@ -1,5 +1,4 @@
 from fabric import task, Connection
-from invoke import Exit
 import deploy_config as config
 import getpass
 
@@ -36,12 +35,6 @@ def deploy(ctx):
     conn = get_connection()
 
     print("Deploying application...")
-
-    result = conn.run(f"test -d {config.REMOTE_PROJECT_DIR}", warn=True, hide=True)
-    if result.failed:
-        print(f"Project directory not found at {config.REMOTE_PROJECT_DIR}")
-        print("Please run 'fab setup' first to initialize the project.")
-        raise Exit(code=1)
 
     with conn.cd(config.REMOTE_PROJECT_DIR):
         print("Stopping application...")
