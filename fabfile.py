@@ -28,50 +28,6 @@ def get_connection():
 
     return _connection
 
-
-@task
-def setup(ctx):
-    """
-    Initial setup of the application on VPS
-    Run this once before first deployment
-    """
-    conn = get_connection()
-
-    print("Setting up project on VPS...")
-
-    print("Checking for git...")
-    result = conn.run("which git", warn=True, hide=True)
-    if result.failed:
-        print("Git not found. Installing git...")
-        conn.sudo("apt-get update && apt-get install -y git")
-
-    print("Checking for Python 3...")
-    result = conn.run("which python3", warn=True, hide=True)
-    if result.failed:
-        print("Python 3 not found. Installing...")
-        conn.sudo("apt-get update && apt-get install -y python3 python3-pip python3-venv")
-
-    print(f"Cloning repository from {config.GIT_REPO}...")
-    result = conn.run(f"test -d {config.REMOTE_PROJECT_DIR}", warn=True, hide=True)
-    if result.failed:
-        conn.run(f"git clone {config.GIT_REPO} {config.REMOTE_PROJECT_DIR}")
-    else:
-        print("Project directory already exists, skipping clone...")
-
-    with conn.cd(config.REMOTE_PROJECT_DIR):
-        print("Creating virtual environment...")
-        result = conn.run(f"test -d {config.REMOTE_VENV_DIR}", warn=True, hide=True)
-        if result.failed:
-            conn.run("python3 -m venv venv")
-
-        print("Installing dependencies...")
-        conn.run(f"{config.REMOTE_VENV_DIR}/bin/pip install --upgrade pip")
-        conn.run(f"{config.REMOTE_VENV_DIR}/bin/pip install -r requirements.txt")
-
-    print("\nSetup completed successfully!")
-    print(f"Project is set up at: {config.REMOTE_PROJECT_DIR}")
-
-
 @task
 def deploy(ctx):
     """
