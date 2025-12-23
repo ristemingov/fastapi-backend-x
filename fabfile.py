@@ -1,0 +1,175 @@
+from fabric import task, Connection
+from invoke import Exit
+import deploy_config as config
+import getpass
+
+_connection = None
+
+
+def get_connection():
+    """Create and return a connection to the VPS"""
+    global _connection
+
+    if _connection is not None:
+        return _connection
+
+    passphrase = getpass.getpass("Enter passphrase for SSH key: ")
+
+    connect_kwargs = {
+        "key_filename": config.VPS_KEY_PATH,
+        "passphrase": passphrase,
+    }
+
+    _connection = Connection(
+        host=config.VPS_HOST,
+        user=config.VPS_USER,
+        connect_kwargs=connect_kwargs,
+    )
+
+    return _connection
+
+
+@task
+def setup(ctx):
+    """
+    Initial setup of the application on VPS
+    Run this once before first deployment
+    """
+    conn = get_connection()
+
+    print("Setting up project on VPS...")
+
+    print("Checking for git...")
+    result = conn.run("which git", warn=True, hide=True)
+    if result.failed:
+        print("Git not found. Installing git...")
+        conn.sudo("apt-get update && apt-get install -y git")
+
+    print("Checking for Python 3...")
+    result = conn.run("which python3", warn=True, hide=True)
+    if result.failed:
+        print("Python 3 not found. Installing...")
+        conn.sudo("apt-get update && apt-get install -y python3 python3-pip python3-venv")
+
+    print(f"Cloning repository from {config.GIT_REPO}...")
+    result = conn.run(f"test -d {config.REMOTE_PROJECT_DIR}", warn=True, hide=True)
+    if result.failed:
+        conn.run(f"git clone {config.GIT_REPO} {config.REMOTE_PROJECT_DIR}")
+    else:
+        print("Project directory already exists, skipping clone...")
+
+    with conn.cd(config.REMOTE_PROJECT_DIR):
+        print("Creating virtual environment...")
+        result = conn.run(f"test -d {config.REMOTE_VENV_DIR}", warn=True, hide=True)
+        if result.failed:
+            conn.run("python3 -m venv venv")
+
+        print("Installing dependencies...")
+        conn.run(f"{config.REMOTE_VENV_DIR}/bin/pip install --upgrade pip")
+        conn.run(f"{config.REMOTE_VENV_DIR}/bin/pip install -r requirements.txt")
+
+    print("\nSetup completed successfully!")
+    print(f"Project is set up at: {config.REMOTE_PROJECT_DIR}")
+
+
+@task
+def deploy(ctx):
+    """
+    Deploy the latest changes from main branch
+    """
+    conn = get_connection()
+
+    print("Deploying application...")
+
+    result = conn.run(f"test -d {config.REMOTE_PROJECT_DIR}", warn=True, hide=True)
+    if result.failed:
+        print(f"Project directory not found at {config.REMOTE_PROJECT_DIR}")
+        print("Please run 'fab setup' first to initialize the project.")
+        raise Exit(code=1)
+
+    with conn.cd(config.REMOTE_PROJECT_DIR):
+        print("Stopping application...")
+        stop_app(conn)
+
+        print(f"Pulling latest changes from {config.GIT_BRANCH} branch...")
+        conn.run(f"git fetch origin {config.GIT_BRANCH}")
+        conn.run(f"git reset --hard origin/{config.GIT_BRANCH}")
+
+        print("Updating dependencies...")
+        conn.run(f"{config.REMOTE_VENV_DIR}/bin/pip install -r requirements.txt")
+
+        print("Starting application...")
+        start_app(conn)
+
+    print("\nDeployment completed successfully!")
+    print(f"Application is running at http://{config.VPS_HOST}:{config.APP_PORT}")
+
+
+@task
+def restart(ctx):
+    """
+    Restart the application
+    """
+    conn = get_connection()
+
+    print("Restarting application...")
+
+    with conn.cd(config.REMOTE_PROJECT_DIR):
+        stop_app(conn)
+        start_app(conn)
+
+    print("Application restarted successfully!")
+
+
+@task
+def stop(ctx):
+    """
+    Stop the application
+    """
+    conn = get_connection()
+
+    print("Stopping application...")
+    stop_app(conn)
+    print("Application stopped!")
+
+
+@task
+def start(ctx):
+    """
+    Start the application
+    """
+    conn = get_connection()
+
+    print("Starting application...")
+    with conn.cd(config.REMOTE_PROJECT_DIR):
+        start_app(conn)
+    print("Application started successfully!")
+
+
+def stop_app(conn):
+    """Helper function to stop the application"""
+    result = conn.run("pgrep -f 'uvicorn main:app'", warn=True, hide=True)
+    if result.ok:
+        conn.run("pkill -f 'uvicorn main:app'", warn=True)
+        print("Stopped existing application process")
+    else:
+        print("No running application process found")
+
+
+def start_app(conn):
+    """Helper function to start the application"""
+    import time
+
+    with conn.cd(config.REMOTE_PROJECT_DIR):
+        conn.run(
+            f"bash -c 'nohup {config.REMOTE_VENV_DIR}/bin/uvicorn main:app "
+            f"--host {config.APP_HOST} --port {config.APP_PORT} "
+            f"> app.log 2>&1 & disown'",
+            hide=True
+        )
+        time.sleep(2)
+        result = conn.run("pgrep -f 'uvicorn main:app'", warn=True, hide=True)
+        if result.ok:
+            print(f"Application started on {config.APP_HOST}:{config.APP_PORT} (PID: {result.stdout.strip()})")
+        else:
+            print("Warning: Application may not have started. Check logs with 'fab logs'")
